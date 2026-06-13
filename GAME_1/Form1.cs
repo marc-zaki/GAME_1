@@ -18,16 +18,15 @@ namespace GAME_1
         public int X, Y;
         public int W, H;
         public Bitmap img;
+
         public List<Bitmap> walkRight = new List<Bitmap>();
         public List<Bitmap> walkLeft = new List<Bitmap>();
 
-        // Directional up-close fight frames
-        public List<Bitmap> fightRight = new List<Bitmap>();
-        public List<Bitmap> fightLeft = new List<Bitmap>();
-
-        // Directional ranged sword-wave frames
         public List<Bitmap> shootRight = new List<Bitmap>();
         public List<Bitmap> shootLeft = new List<Bitmap>();
+
+        public List<Bitmap> fightRight = new List<Bitmap>();
+        public List<Bitmap> fightLeft = new List<Bitmap>();
 
         public int currentFrame = 0;
         public int dx = 1;
@@ -38,60 +37,59 @@ namespace GAME_1
     // =======================================================
     public partial class Form1 : Form
     {
-        // Engine Core Properties
         Timer tt = new Timer();
         Bitmap off;
         bool isLoad = false;
 
-        // Environment Entities
         Bitmap bgImg;
         CActor hero = new CActor();
         CActor elevator = new CActor();
         CActor ladder = new CActor();
         CActor enemy = new CActor();
-        List<CActor> LActsEnemyBullets = new List<CActor>();
+        CActor keyDrop = new CActor();
 
-        // Camera Tracking Engine Coordinates
         int zoomWidth = 800;
         int zoomHeight = 450;
         int camX = 0;
         int camY = 0;
         int maxCamX = 0;
 
-        // Pure Integer Jump Physics & State
         int groundY;
         int verticalVelocity = 0;
         int gravity = 2;
         bool isJumping = false;
         bool isClimbing = false;
 
-        // Level & Puzzle Flow Management Flags
+        int heroState = 0; // 0 = Idle/Walk, 1 = Shooting
+        List<CActor> heroBullets = new List<CActor>();
+
         int currentLevel = 1;
         bool isRidingElevator = false;
         bool isEnemyAlive = true;
+        int enemyHealth = 6;
+        bool isKeyDropped = false;
         bool hasKey = false;
 
-        // Enemy Patrolling Bounds (Map Coordinates)
         int enemyMinX;
         int enemyMaxX;
 
-        // Enemy State Machine Constants
         const int STATE_PATROL = 0;
         const int STATE_FIGHT = 1;
-        const int STATE_SHOOT = 2;
         int enemyState = STATE_PATROL;
+
+        int heroHealth = 100;
+        int heroDamageCooldown = 0;
 
         public Form1()
         {
             this.WindowState = FormWindowState.Maximized;
+            this.KeyPreview = true;
             InitializeComponent();
 
-            // Wire up structural layout events
             this.Load += Form1_Load;
             this.Paint += Form1_Paint;
             this.KeyDown += Form1_KeyDown;
 
-            // Core game loop configuration
             tt.Tick += Tt_Tick;
             tt.Interval = 20;
             tt.Start();
@@ -120,37 +118,24 @@ namespace GAME_1
                     l.MakeTransparent(l.GetPixel(0, 0));
                     hero.walkLeft.Add(l);
                 }
+
+                for (int i = 1; i <= 5; i++)
+                {
+                    Bitmap r = new Bitmap("righthero_shoot_" + i + ".png");
+                    r.MakeTransparent(r.GetPixel(0, 0));
+                    hero.shootRight.Add(r);
+
+                    Bitmap l = new Bitmap("lefthero_shoot_" + i + ".png");
+                    l.MakeTransparent(l.GetPixel(0, 0));
+                    hero.shootLeft.Add(l);
+                }
             }
-        }
-
-        void CreateSwordWave()
-        {
-            CActor wave = new CActor();
-            wave.img = new Bitmap("sword_wave.png");
-            wave.img.MakeTransparent(wave.img.GetPixel(0, 0));
-            wave.W = 20;
-            wave.H = 50;
-
-            wave.Y = enemy.Y + (enemy.H / 2) - (wave.H / 2);
-            wave.dx = enemy.dx;
-
-            if (enemy.dx == 1)
-            {
-                wave.X = enemy.X + enemy.W;
-            }
-            else
-            {
-                wave.X = enemy.X - wave.W;
-            }
-
-            LActsEnemyBullets.Add(wave);
         }
 
         void InitEnemySprites()
         {
             if (enemy.walkRight.Count == 0)
             {
-                // 1. Load Enemy Walking Frames (4 frames)
                 for (int i = 1; i <= 4; i++)
                 {
                     Bitmap r = new Bitmap("samurai_walk_R" + i + ".png");
@@ -162,88 +147,230 @@ namespace GAME_1
                     enemy.walkLeft.Add(l);
                 }
 
-                // 2. Load Ranged Sword Wave Attack Frames (4 frames)
                 for (int i = 1; i <= 4; i++)
                 {
                     Bitmap r = new Bitmap("samurai_shoot_R" + i + ".png");
                     r.MakeTransparent(r.GetPixel(0, 0));
-                    enemy.shootRight.Add(r);
-
-                    Bitmap l = new Bitmap("samurai_shoot_L" + i + ".png");
-                    l.MakeTransparent(l.GetPixel(0, 0));
-                    enemy.shootLeft.Add(l);
-                }
-
-                // 3. Load Close Combat Melee Fight Frames Verbatim
-                for (int i = 1; i <= 4; i++)
-                {
-                    string rPath = "";
-                    string lPath = "";
-
-                    // Handles the direct naming differences between frames 1-3 and frame 4
-                    if (i <= 3)
-                    {
-                        rPath = "samurai_shoot_R" + i + ".png";
-                        lPath = "samurai_shoot_L" + i + ".png";
-                    }
-                    else
-                    {
-                        rPath = "samurai_shoot_R4.png";
-                        lPath = "samurai_shoot_L4.png";
-                    }
-
-                    Bitmap r = new Bitmap(rPath);
-                    r.MakeTransparent(r.GetPixel(0, 0));
                     enemy.fightRight.Add(r);
 
-                    Bitmap l = new Bitmap(lPath);
+                    Bitmap l = new Bitmap("samurai_shoot_L" + i + ".png");
                     l.MakeTransparent(l.GetPixel(0, 0));
                     enemy.fightLeft.Add(l);
                 }
             }
         }
 
-        void UpdateEnemyAI()
+        // =======================================================
+        // 4. HERO COMBAT & MECHANICS ENGINE
+        // =======================================================
+
+        void MoveHeroRight()
         {
-            if (isEnemyAlive == false) return;
+            hero.dx = 1;
+            hero.currentFrame += 1;
 
-            int enemyScreenX = ((enemy.X - camX) * this.ClientSize.Width) / zoomWidth;
-
-            // =======================================================
-            // 1. STATE DETERMINATION (LECTURE-SAFE RANGE CHECK)
-            // =======================================================
-            if (hero.X >= enemyScreenX - 600 && hero.X <= enemyScreenX + 600)
+            if (hero.currentFrame >= hero.walkRight.Count)
             {
-                // If we are already fighting up close, don't break out to shoot waves
-                if (enemyState != STATE_FIGHT)
-                {
-                    if (enemyState != STATE_SHOOT)
-                    {
-                        enemyState = STATE_SHOOT;
-                        enemy.currentFrame = 0;
-                    }
+                hero.currentFrame = 0;
+            }
 
-                    if (hero.X < enemyScreenX)
+            hero.img = hero.walkRight[hero.currentFrame];
+
+            if (hero.X >= this.ClientSize.Width / 2 && camX < maxCamX)
+            {
+                camX += 30;
+            }
+            else if (hero.X < this.ClientSize.Width - hero.W)
+            {
+                hero.X += 25;
+            }
+        }
+
+        void MoveHeroLeft()
+        {
+            hero.dx = -1;
+            hero.currentFrame += 1;
+
+            if (hero.currentFrame >= hero.walkLeft.Count)
+            {
+                hero.currentFrame = 0;
+            }
+
+            hero.img = hero.walkLeft[hero.currentFrame];
+
+            if (hero.X <= this.ClientSize.Width / 2 && camX > 0)
+            {
+                camX -= 30;
+            }
+            else if (hero.X > 0)
+            {
+                hero.X -= 25;
+            }
+        }
+
+        void UpdateHeroPhysics()
+        {
+            int currentFloorY = groundY;
+
+            if (hero.X + (hero.W / 2) >= 0 && hero.X + (hero.W / 2) <= elevator.X + elevator.W)
+            {
+                if (hero.Y + hero.H <= ladder.Y + 20)
+                {
+                    currentFloorY = ladder.Y - hero.H;
+                }
+            }
+
+            if (isClimbing == false)
+            {
+                if (hero.Y < currentFloorY || isJumping == true)
+                {
+                    hero.Y += verticalVelocity;
+                    verticalVelocity += gravity;
+
+                    if (hero.Y >= currentFloorY)
                     {
-                        enemy.dx = -1;
-                    }
-                    else
-                    {
-                        enemy.dx = 1;
+                        hero.Y = currentFloorY;
+                        isJumping = false;
+                        verticalVelocity = 0;
                     }
                 }
+            }
+        }
+
+        void CreateHeroMagic()
+        {
+            CActor magic = new CActor();
+            magic.W = 20;
+            magic.H = 20;
+            magic.dx = hero.dx;
+
+            magic.Y = hero.Y + (hero.H / 4) + 5;
+
+            int heroMapX = ((hero.X * zoomWidth) / this.ClientSize.Width) + camX;
+            int heroMapW = (hero.W * zoomWidth) / this.ClientSize.Width;
+            int magicMapW = (magic.W * zoomWidth) / this.ClientSize.Width;
+            int mapOffset = (15 * zoomWidth) / this.ClientSize.Width;
+
+            if (hero.dx == 1)
+            {
+                magic.X = heroMapX + heroMapW - mapOffset;
             }
             else
             {
-                if (enemyState != STATE_FIGHT)
+                magic.X = heroMapX - magicMapW + mapOffset;
+            }
+
+            heroBullets.Add(magic);
+        }
+
+        void UpdateHeroShooting()
+        {
+            if (heroState == 1)
+            {
+                hero.currentFrame++;
+
+                // Cleaned up the ternary operator here
+                List<Bitmap> currentList = new List<Bitmap>();
+                if (hero.dx == 1)
                 {
-                    enemyState = STATE_PATROL;
+                    currentList = hero.shootRight;
+                }
+                else
+                {
+                    currentList = hero.shootLeft;
+                }
+
+                if (hero.currentFrame >= currentList.Count)
+                {
+                    heroState = 0;
+                    hero.currentFrame = 0;
+
+                    // Cleaned up the ternary operator here
+                    if (hero.dx == 1)
+                    {
+                        if (hero.walkRight.Count > 0)
+                        {
+                            hero.img = hero.walkRight[0];
+                        }
+                    }
+                    else
+                    {
+                        if (hero.walkLeft.Count > 0)
+                        {
+                            hero.img = hero.walkLeft[0];
+                        }
+                    }
+                }
+                else
+                {
+                    hero.img = currentList[hero.currentFrame];
+
+                    if (hero.currentFrame == 3)
+                    {
+                        CreateHeroMagic();
+                    }
                 }
             }
 
-            // Keep facing player if a close quarters combat fight is forced
-            if (enemyState == STATE_FIGHT)
+            for (int i = heroBullets.Count - 1; i >= 0; i--)
             {
+                CActor b = heroBullets[i];
+                b.X += b.dx * 35;
+
+                int bulletScreenX = ((b.X - camX) * this.ClientSize.Width) / zoomWidth;
+
+                if (bulletScreenX < -50 || bulletScreenX > this.ClientSize.Width + 50)
+                {
+                    heroBullets.RemoveAt(i);
+                    continue;
+                }
+
+                if (isEnemyAlive == true)
+                {
+                    int enemyScreenX = ((enemy.X - camX) * this.ClientSize.Width) / zoomWidth;
+
+                    if (bulletScreenX + b.W >= enemyScreenX && bulletScreenX <= enemyScreenX + enemy.W &&
+                        b.Y + b.H >= enemy.Y && b.Y <= enemy.Y + enemy.H)
+                    {
+                        heroBullets.RemoveAt(i);
+                        enemyHealth -= 1;
+
+                        if (enemyHealth <= 0)
+                        {
+                            isEnemyAlive = false;
+                            isKeyDropped = true;
+                            keyDrop.X = enemy.X + (enemy.W / 2);
+                            keyDrop.Y = enemy.Y + enemy.H - 20;
+                            keyDrop.W = 30;
+                            keyDrop.H = 20;
+                        }
+                    }
+                }
+            }
+        }
+
+        // =======================================================
+        // 5. ENEMY BEHAVIOR ENGINE
+        // =======================================================
+
+        void UpdateEnemyAI()
+        {
+            if (isEnemyAlive == false)
+            {
+                return;
+            }
+
+            int enemyScreenX = ((enemy.X - camX) * this.ClientSize.Width) / zoomWidth;
+
+            if (hero.X >= enemyScreenX - 250 && hero.X <= enemyScreenX + 250 &&
+                hero.Y >= enemy.Y - 150 && hero.Y <= enemy.Y + 150)
+            {
+                if (enemyState != STATE_FIGHT)
+                {
+                    enemyState = STATE_FIGHT;
+                    enemy.currentFrame = 0;
+                }
+
                 if (hero.X < enemyScreenX)
                 {
                     enemy.dx = -1;
@@ -253,12 +380,14 @@ namespace GAME_1
                     enemy.dx = 1;
                 }
             }
+            else
+            {
+                if (enemyState != STATE_PATROL)
+                {
+                    enemyState = STATE_PATROL;
+                }
+            }
 
-            // =======================================================
-            // 2. STATE EXECUTION MATRIX
-            // =======================================================
-
-            // STATE 0: PATROLLING (Runs when player is far away)
             if (enemyState == STATE_PATROL)
             {
                 enemy.X += enemy.dx * 5;
@@ -267,28 +396,40 @@ namespace GAME_1
                 if (enemy.dx == 1)
                 {
                     if (enemy.currentFrame >= enemy.walkRight.Count)
+                    {
                         enemy.currentFrame = 0;
+                    }
                     if (enemy.walkRight.Count > 0)
+                    {
                         enemy.img = enemy.walkRight[enemy.currentFrame];
+                    }
                     if (enemy.X >= enemyMaxX)
+                    {
                         enemy.dx = -1;
+                    }
                 }
                 else
                 {
                     if (enemy.currentFrame >= enemy.walkLeft.Count)
+                    {
                         enemy.currentFrame = 0;
+                    }
                     if (enemy.walkLeft.Count > 0)
+                    {
                         enemy.img = enemy.walkLeft[enemy.currentFrame];
+                    }
                     if (enemy.X <= enemyMinX)
+                    {
                         enemy.dx = 1;
+                    }
                 }
             }
-            // STATE 1: CLOSE COMBAT MELEE (Uses your new directional fight assets)
             else if (enemyState == STATE_FIGHT)
             {
                 enemy.currentFrame += 1;
 
-                List<Bitmap> currentFightList;
+                // Cleaned up the ternary operator here
+                List<Bitmap> currentFightList = new List<Bitmap>();
                 if (enemy.dx == 1)
                 {
                     currentFightList = enemy.fightRight;
@@ -308,131 +449,67 @@ namespace GAME_1
                     enemy.img = currentFightList[enemy.currentFrame];
                 }
             }
-            // STATE 2: RANGED SWORD SLASH
-            else if (enemyState == STATE_SHOOT)
-            {
-                enemy.currentFrame += 1;
-
-                List<Bitmap> currentShootList;
-                if (enemy.dx == 1)
-                {
-                    currentShootList = enemy.shootRight;
-                }
-                else
-                {
-                    currentShootList = enemy.shootLeft;
-                }
-
-                if (enemy.currentFrame >= currentShootList.Count)
-                {
-                    enemy.currentFrame = 0;
-                }
-
-                // Release the wave projectile exactly on Frame 3 (Index 2)
-                if (enemy.currentFrame == 2)
-                {
-                    CreateSwordWave();
-                }
-
-                if (currentShootList.Count > 0)
-                {
-                    enemy.img = currentShootList[enemy.currentFrame];
-                }
-            }
-
-            // =======================================================
-            // 3. PROJECTILE PROCESSING
-            // =======================================================
-            for (int i = LActsEnemyBullets.Count - 1; i >= 0; i--)
-            {
-                CActor b = LActsEnemyBullets[i];
-                b.X += b.dx * 18;
-
-                int bulletScreenX = ((b.X - camX) * this.ClientSize.Width) / zoomWidth;
-
-                if (bulletScreenX < -50 || bulletScreenX > this.ClientSize.Width + 50)
-                {
-                    LActsEnemyBullets.RemoveAt(i);
-                }
-            }
         }
 
-        // =======================================================
-        // 4. HERO CORE MECHANICS FUNCTIONS
-        // =======================================================
-
-        void MoveHeroRight()
+        void CheckCollisions()
         {
-            hero.currentFrame += 1;
-            if (hero.currentFrame >= hero.walkRight.Count)
+            if (isEnemyAlive == true)
             {
-                hero.currentFrame = 0;
-            }
-            hero.img = hero.walkRight[hero.currentFrame];
+                int enemyScreenX = ((enemy.X - camX) * this.ClientSize.Width) / zoomWidth;
 
-            if (hero.X >= this.ClientSize.Width / 2 && camX < maxCamX)
-            {
-                camX += 30;
-            }
-            else if (hero.X < this.ClientSize.Width - hero.W)
-            {
-                hero.X += 25;
-            }
-        }
-
-        void MoveHeroLeft()
-        {
-            hero.currentFrame += 1;
-            if (hero.currentFrame >= hero.walkLeft.Count)
-            {
-                hero.currentFrame = 0;
-            }
-            hero.img = hero.walkLeft[hero.currentFrame];
-
-            if (hero.X <= this.ClientSize.Width / 2 && camX > 0)
-            {
-                camX -= 30;
-            }
-            else if (hero.X > 0)
-            {
-                hero.X -= 25;
-            }
-        }
-
-        void UpdateHeroPhysics()
-        {
-            if (isJumping == true)
-            {
-                hero.Y += verticalVelocity;
-                verticalVelocity += gravity;
-
-                if (hero.Y >= groundY)
+                if (hero.X + hero.W >= enemyScreenX && hero.X <= enemyScreenX + enemy.W &&
+                    hero.Y + hero.H >= enemy.Y && hero.Y <= enemy.Y + enemy.H)
                 {
-                    hero.Y = groundY;
-                    isJumping = false;
-                    verticalVelocity = 0;
+                    if (isJumping == true && verticalVelocity > 0)
+                    {
+                        enemyHealth -= 1;
+                        verticalVelocity = -25;
+
+                        if (enemyHealth <= 0)
+                        {
+                            isEnemyAlive = false;
+                            isKeyDropped = true;
+                            keyDrop.X = enemy.X + (enemy.W / 2);
+                            keyDrop.Y = enemy.Y + enemy.H - 20;
+                            keyDrop.W = 30;
+                            keyDrop.H = 20;
+                        }
+                    }
+                    else if (heroDamageCooldown == 0 && enemyState == STATE_FIGHT)
+                    {
+                        heroHealth -= 25;
+                        heroDamageCooldown = 40;
+
+                        verticalVelocity = -15;
+                        isJumping = true;
+
+                        if (hero.X < enemyScreenX)
+                        {
+                            hero.X -= 50;
+                        }
+                        else
+                        {
+                            hero.X += 50;
+                        }
+
+                        if (heroHealth <= 0)
+                        {
+                            LoadLevel();
+                            return;
+                        }
+                    }
                 }
             }
-        }
 
-        // =======================================================
-        // 5. ENEMY BEHAVIOR ENGINE FUNCTIONS
-        // =======================================================
-
-        void CheckEnemyCollision()
-        {
-            if (isEnemyAlive == false) return;
-
-            int enemyScreenX = ((enemy.X - camX) * this.ClientSize.Width) / zoomWidth;
-
-            if (hero.X + hero.W >= enemyScreenX && hero.X <= enemyScreenX + enemy.W &&
-                hero.Y + hero.H >= enemy.Y && hero.Y <= enemy.Y + enemy.H)
+            if (isKeyDropped == true && hasKey == false)
             {
-                if (isJumping == true && verticalVelocity > 0)
+                int keyScreenX = ((keyDrop.X - camX) * this.ClientSize.Width) / zoomWidth;
+
+                if (hero.X + hero.W >= keyScreenX && hero.X <= keyScreenX + keyDrop.W &&
+                    hero.Y + hero.H >= keyDrop.Y && hero.Y <= keyDrop.Y + keyDrop.H)
                 {
-                    isEnemyAlive = false;
                     hasKey = true;
-                    verticalVelocity = -15;
+                    isKeyDropped = false;
                 }
             }
         }
@@ -493,7 +570,6 @@ namespace GAME_1
 
             zoomWidth = bgImg.Width / 2;
             zoomHeight = (zoomWidth * this.ClientSize.Height) / this.ClientSize.Width;
-
             maxCamX = bgImg.Width - zoomWidth;
             camY = (bgImg.Height - zoomHeight) / 2;
 
@@ -510,23 +586,41 @@ namespace GAME_1
             elevator.Y = groundY + hero.H;
             ladder.Y = groundY - ladder.H + hero.H;
 
-            // Large boss proportions
-            enemy.W = 120;
-            enemy.H = 120;
-            enemy.X = ladder.X + 150;
-            enemy.Y = ladder.Y - enemy.H;
-            if (enemy.walkLeft.Count > 0) enemy.img = enemy.walkLeft[0];
-
-            enemyMinX = ladder.X + 80;
-            enemyMaxX = elevator.X - 150;
+            enemyHealth = 6;
+            isEnemyAlive = true;
+            hasKey = false;
+            isKeyDropped = false;
+            heroBullets.Clear();
+            heroHealth = 100;
+            heroDamageCooldown = 0;
 
             if (currentLevel == 1)
             {
+                if (enemy.walkLeft.Count > 0)
+                {
+                    enemy.img = enemy.walkLeft[0];
+                }
+
+                if (enemy.img != null)
+                {
+                    enemy.W = enemy.img.Width * 4;
+                    enemy.H = enemy.img.Height * 4;
+                }
+
+                enemyMinX = 0;
+                enemyMaxX = elevator.X - 150;
+
+                Random RR = new Random();
+                enemy.X = RR.Next(enemyMinX, enemyMaxX);
+                enemy.Y = ladder.Y - enemy.H;
+
                 camX = 0;
                 hero.X = 100;
             }
             else if (currentLevel == 2)
             {
+                isEnemyAlive = false;
+
                 camX = maxCamX;
                 hero.X = this.ClientSize.Width / 2 + 100;
             }
@@ -539,36 +633,66 @@ namespace GAME_1
             if (isLoad == true)
             {
                 int ladderScreenX = ((ladder.X - camX) * this.ClientSize.Width) / zoomWidth;
+
                 if (hero.X + hero.W >= ladderScreenX && hero.X <= ladderScreenX + ladder.W)
                 {
-                    if (e.KeyCode == Keys.W)
+                    if (e.KeyCode == Keys.W || e.KeyCode == Keys.Up)
                     {
                         isClimbing = true;
                         isJumping = false;
+                        verticalVelocity = 0;
                         hero.Y -= 15;
                         hero.X = ladderScreenX + (ladder.W / 2) - (hero.W / 2);
+
+                        int topFloorY = ladder.Y - hero.H;
+                        if (hero.Y <= topFloorY)
+                        {
+                            hero.Y = topFloorY;
+                            isClimbing = false;
+                        }
                         return;
+                    }
+                    if (e.KeyCode == Keys.S || e.KeyCode == Keys.Down)
+                    {
+                        isClimbing = true;
+                        isJumping = false;
+                        verticalVelocity = 0;
+                        hero.Y += 15;
+                        hero.X = ladderScreenX + (ladder.W / 2) - (hero.W / 2);
+
+                        if (hero.Y >= groundY)
+                        {
+                            hero.Y = groundY;
+                            isClimbing = false;
+                        }
+                        return;
+                    }
+
+                    if (isClimbing == true && (e.KeyCode == Keys.A || e.KeyCode == Keys.D || e.KeyCode == Keys.Left || e.KeyCode == Keys.Right))
+                    {
+                        isClimbing = false;
                     }
                 }
 
-                if (isClimbing == true && (e.KeyCode == Keys.A || e.KeyCode == Keys.D))
+                if (e.KeyCode == Keys.F && isClimbing == false && heroState == 0)
                 {
-                    isClimbing = false;
+                    heroState = 1;
+                    hero.currentFrame = 0;
                 }
 
-                if (isClimbing == false)
+                if (isClimbing == false && heroState == 0)
                 {
-                    if (e.KeyCode == Keys.D && isJumping == false)
+                    if ((e.KeyCode == Keys.D || e.KeyCode == Keys.Right) && isJumping == false)
                     {
                         MoveHeroRight();
                     }
 
-                    if (e.KeyCode == Keys.A && isJumping == false)
+                    if ((e.KeyCode == Keys.A || e.KeyCode == Keys.Left) && isJumping == false)
                     {
                         MoveHeroLeft();
                     }
 
-                    if (e.KeyCode == Keys.Space && isJumping == false)
+                    if ((e.KeyCode == Keys.Space || e.KeyCode == Keys.Up) && isJumping == false)
                     {
                         isJumping = true;
                         verticalVelocity = -30;
@@ -581,11 +705,16 @@ namespace GAME_1
         {
             if (isLoad == true)
             {
-                UpdateHeroPhysics();
-                HandleElevatorMechanics();
+                if (heroDamageCooldown > 0)
+                {
+                    heroDamageCooldown--;
+                }
 
+                UpdateHeroPhysics();
+                UpdateHeroShooting();
+                HandleElevatorMechanics();
                 UpdateEnemyAI();
-                CheckEnemyCollision();
+                CheckCollisions();
 
                 DrawDubb(this.CreateGraphics());
             }
@@ -625,54 +754,68 @@ namespace GAME_1
             if (currentLevel == 1)
             {
                 int ladderScreenX = ((ladder.X - camX) * this.ClientSize.Width) / zoomWidth;
-                int platformStartScreenX = ((enemyMinX - camX) * this.ClientSize.Width) / zoomWidth;
-                int platformEndScreenX = ((enemyMaxX + enemy.W - camX) * this.ClientSize.Width) / zoomWidth;
+                int platformStartScreenX = ((0 - camX) * this.ClientSize.Width) / zoomWidth;
+                int platformEndScreenX = ((elevator.X + elevator.W - camX) * this.ClientSize.Width) / zoomWidth;
+                int elevatorScreenX = ((elevator.X - camX) * this.ClientSize.Width) / zoomWidth;
 
-                Pen platformPen = new Pen(Color.Gray, 6);
-                g2.DrawLine(platformPen, platformStartScreenX, ladder.Y, platformEndScreenX, ladder.Y);
+                g2.FillRectangle(Brushes.DarkSlateGray, platformStartScreenX, ladder.Y, platformEndScreenX - platformStartScreenX, 20);
+                g2.DrawRectangle(Pens.Black, platformStartScreenX, ladder.Y, platformEndScreenX - platformStartScreenX, 20);
 
-                Pen ladderPen = new Pen(Color.Brown, 4);
+                g2.FillRectangle(Brushes.DarkGray, elevatorScreenX, elevator.Y, elevator.W, elevator.H);
+                g2.DrawRectangle(Pens.Black, elevatorScreenX, elevator.Y, elevator.W, elevator.H);
 
-                g2.DrawLine(ladderPen, ladderScreenX, ladder.Y, ladderScreenX, ladder.Y + ladder.H);
-                g2.DrawLine(ladderPen, ladderScreenX + ladder.W, ladder.Y, ladderScreenX + ladder.W, ladder.Y + ladder.H);
+                Pen ladderPen = new Pen(Color.SaddleBrown, 6);
+                g2.DrawLine(ladderPen, ladderScreenX + 10, ladder.Y, ladderScreenX + 10, ladder.Y + ladder.H);
+                g2.DrawLine(ladderPen, ladderScreenX + ladder.W - 10, ladder.Y, ladderScreenX + ladder.W - 10, ladder.Y + ladder.H);
 
-                for (int y = ladder.Y; y <= ladder.Y + ladder.H; y += 30)
+                for (int y = ladder.Y + 20; y < ladder.Y + ladder.H; y += 30)
                 {
-                    g2.DrawLine(ladderPen, ladderScreenX, y, ladderScreenX + ladder.W, y);
+                    g2.DrawLine(ladderPen, ladderScreenX + 10, y, ladderScreenX + ladder.W - 10, y);
                 }
+            }
+
+            if (isKeyDropped == true)
+            {
+                int keyScreenX = ((keyDrop.X - camX) * this.ClientSize.Width) / zoomWidth;
+                g2.FillRectangle(Brushes.Gold, keyScreenX, keyDrop.Y, keyDrop.W, keyDrop.H);
             }
 
             if (currentLevel == 1 && isEnemyAlive == true && enemy.img != null)
             {
                 int enemyScreenX = ((enemy.X - camX) * this.ClientSize.Width) / zoomWidth;
                 g2.DrawImage(enemy.img, enemyScreenX, enemy.Y, enemy.W, enemy.H);
+
+                g2.FillRectangle(Brushes.Red, enemyScreenX, enemy.Y + 20, (enemy.W / 6) * enemyHealth, 10);
             }
 
+            // 5. DRAW HERO
             if (hero.img != null)
             {
-                g2.DrawImage(hero.img, hero.X, hero.Y, hero.W, hero.H);
+                if (heroDamageCooldown == 0 || heroDamageCooldown % 4 < 2)
+                {
+                    g2.DrawImage(hero.img, hero.X, hero.Y, hero.W, hero.H);
+                }
             }
 
-            if (currentLevel == 1)
+            // 6. DRAW HUD ALERTS & HEALTH BARS
+            g2.DrawString("HERO HP", new Font("Arial", 12, FontStyle.Bold), Brushes.White, 20, 10);
+            g2.FillRectangle(Brushes.Gray, 20, 30, 200, 20);
+            g2.FillRectangle(Brushes.LimeGreen, 20, 30, heroHealth * 2, 20);
+            g2.DrawRectangle(Pens.White, 20, 30, 200, 20);
+
+            for (int i = 0; i < heroBullets.Count; i++)
             {
-                int elevatorScreenX = ((elevator.X - camX) * this.ClientSize.Width) / zoomWidth;
-                g2.FillRectangle(Brushes.DarkGray, elevatorScreenX, elevator.Y, elevator.W, elevator.H);
-                g2.DrawRectangle(Pens.Black, elevatorScreenX, elevator.Y, elevator.W, elevator.H);
+                CActor b = heroBullets[i];
+                int bulletScreenX = ((b.X - camX) * this.ClientSize.Width) / zoomWidth;
+
+                g2.FillEllipse(Brushes.Cyan, bulletScreenX, b.Y, b.W, b.H);
+                g2.FillEllipse(Brushes.White, bulletScreenX + 4, b.Y + 4, b.W - 8, b.H - 8);
             }
 
             if (hasKey == true)
             {
-                g2.FillRectangle(Brushes.Gold, 50, 50, 30, 20);
-            }
-
-            for (int i = 0; i < LActsEnemyBullets.Count; i++)
-            {
-                CActor b = LActsEnemyBullets[i];
-                if (b.img != null)
-                {
-                    int bulletScreenX = ((b.X - camX) * this.ClientSize.Width) / zoomWidth;
-                    g2.DrawImage(b.img, bulletScreenX, b.Y, b.W, b.H);
-                }
+                g2.FillRectangle(Brushes.Gold, 50, 60, 30, 20);
+                g2.DrawString("Key Acquired", new Font("Arial", 12), Brushes.White, 90, 60);
             }
         }
     }
